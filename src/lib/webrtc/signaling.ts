@@ -117,22 +117,26 @@ export class ICEManager {
 		this.candidates.forEach(callback);
 	}
 
-	async waitForCandidates(timeout: number = 5000): Promise<RTCIceCandidate[]> {
+	async waitForCandidates(timeout: number = 15000): Promise<RTCIceCandidate[]> {
 		return new Promise((resolve) => {
 			// 이미 수집 완료되었으면 바로 반환
 			if (this.gatheringComplete) {
+				console.log(`✅ ICE candidates already collected: ${this.candidates.length}`);
 				resolve(this.candidates);
 				return;
 			}
 
 			const timer = setTimeout(() => {
-				console.warn('ICE candidate gathering timeout, using collected candidates');
+				console.warn(
+					`⚠️ ICE candidate gathering timeout after ${timeout}ms, using ${this.candidates.length} collected candidates`
+				);
 				resolve(this.candidates);
 			}, timeout);
 
 			const checkComplete = () => {
 				if (this.peerConnection.iceGatheringState === 'complete' || this.gatheringComplete) {
 					clearTimeout(timer);
+					console.log(`✅ ICE candidate gathering completed: ${this.candidates.length} candidates`);
 					resolve(this.candidates);
 				}
 			};
@@ -166,12 +170,16 @@ export class ConnectionMonitor {
 	private maxReconnectAttempts = 3;
 	private reconnectDelay = 1000;
 	private connectionTimeout: number | null = null;
+	private timeoutDuration: number;
 
 	constructor(
 		private peerConnection: RTCPeerConnection,
 		private onReconnect: () => Promise<void>,
-		private onFailure: () => void
+		private onFailure: () => void,
+		timeoutDuration: number = 60000 // 기본 60초
 	) {
+		this.timeoutDuration = timeoutDuration;
+
 		this.peerConnection.onconnectionstatechange = () => {
 			this.handleConnectionStateChange();
 		};
@@ -183,10 +191,10 @@ export class ConnectionMonitor {
 	private startConnectionTimeout(): void {
 		this.connectionTimeout = setTimeout(() => {
 			if (this.peerConnection.connectionState === 'connecting') {
-				console.warn('Connection timeout, treating as failed');
+				console.warn(`⚠️ Connection timeout after ${this.timeoutDuration}ms, treating as failed`);
 				this.handleConnectionFailure();
 			}
-		}, 30000); // 30초 타임아웃
+		}, this.timeoutDuration);
 	}
 
 	private clearConnectionTimeout(): void {

@@ -11,7 +11,6 @@ export class PlanningPokerHost {
 
 	constructor(roomId: string, hostName: string) {
 		const hostId = generateUserId();
-
 		this.room = {
 			id: roomId,
 			hostId,
@@ -31,7 +30,8 @@ export class PlanningPokerHost {
 
 		this.participants.set(hostId, host);
 		this.room.participants = this.participants;
-		this.updateRoom();
+
+		console.log(`🏠 Host created: ${hostName} (${hostId})`);
 	}
 
 	// 참가 링크 생성 (개선된 ICE candidates 포함)
@@ -96,16 +96,19 @@ export class PlanningPokerHost {
 			}
 
 			// 새 WebRTC 연결 생성
+			console.log('🔧 Creating new WebRTC connection for participant...');
 			const connection = new WebRTCConnection();
 			connection.createDataChannel();
 
 			// 메시지 핸들러 설정
 			connection.onMessage((message) => {
+				console.log(`📨 Host received message from ${participantId}:`, message.type);
 				this.handleMessage(participantId, message);
 			});
 
 			// 연결 상태 변화 처리
 			connection.onConnectionStateChange((state) => {
+				console.log(`🔗 Participant ${answerData.participantName} connection state: ${state}`);
 				this.handleConnectionStateChange(participantId, state);
 			});
 
@@ -123,13 +126,56 @@ export class PlanningPokerHost {
 
 			// 새로운 Offer 생성 (이 참가자 전용)
 			console.log('📡 Creating new offer for participant...');
-			await connection.createOfferWithCandidates();
+			const { iceCandidates } = await connection.createOfferWithCandidates();
+			console.log(`📡 Offer created with ${iceCandidates.length} ICE candidates`);
 
-			// Offer를 원격 설명으로 설정 (createOfferWithCandidates에서 이미 설정됨)
+			// Offer는 이미 setLocalDescription으로 설정됨 (createOfferWithCandidates에서)
 			console.log('📡 Local offer set for participant');
 
 			// Answer 및 ICE candidates 처리
+			console.log('📥 Processing answer from participant...');
 			await connection.handleAnswerWithCandidates(answerData.answer, answerData.iceCandidates);
+
+			// 연결 완료 대기 (최대 45초, 더 긴 간격으로 체크)
+			console.log('⏳ Waiting for connection to establish...');
+			let connectionEstablished = false;
+			for (let i = 0; i < 90; i++) {
+				// 90회 * 500ms = 45초
+				// 연결 상태와 ICE connection 상태 모두 확인
+				const isConnected = connection.isConnected;
+				const iceConnected = connection.iceConnectionState === 'connected';
+				const dataChannelState = connection.dataChannelState;
+
+				console.log(
+					`⏳ Connection check ${i + 1}/90 - Connected: ${isConnected}, ICE: ${iceConnected}, DataChannel: ${dataChannelState}`
+				);
+
+				// ICE connection이 connected이고 데이터 채널이 connecting 이상이면 연결된 것으로 간주
+				if (
+					isConnected ||
+					(iceConnected && (dataChannelState === 'open' || dataChannelState === 'connecting'))
+				) {
+					connectionEstablished = true;
+					console.log('✅ Connection established successfully');
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 500)); // 500ms 대기
+			}
+
+			if (!connectionEstablished) {
+				console.warn('⚠️ Connection not established within 45 seconds, but continuing...');
+				console.warn(
+					`⚠️ Final connection state: Connected: ${connection.isConnected}, ICE: ${connection.iceConnectionState}, DataChannel: ${connection.dataChannelState}`
+				);
+
+				// 연결 실패 시 정리
+				console.warn('🧹 Cleaning up failed connection...');
+				connection.close();
+				this.connections.delete(participantId);
+				this.participants.delete(participantId);
+				this.room.participants = this.participants;
+				throw new Error('WebRTC 연결 설정에 실패했습니다. 네트워크 환경을 확인해주세요.');
+			}
 
 			// 초기 게임 상태 전송 (연결 완료 후)
 			this.scheduleInitialGameState(participantId);
@@ -165,7 +211,16 @@ export class PlanningPokerHost {
 	// 초기 게임 상태 전송
 	private sendInitialGameState(participantId: string): void {
 		const connection = this.connections.get(participantId);
-		if (!connection || !connection.isConnected) return;
+		if (!connection || !connection.isConnected) {
+			console.warn(`❌ Cannot send initial state to ${participantId}: connection not ready`);
+			return;
+		}
+
+		const participant = this.participants.get(participantId);
+		if (!participant) {
+			console.warn(`❌ Participant ${participantId} not found`);
+			return;
+		}
 
 		const initialMessage: GameMessage = {
 			type: 'game_state_changed',
@@ -173,17 +228,19 @@ export class PlanningPokerHost {
 				gameState: this.room.gameState,
 				participants: Array.from(this.participants.values()),
 				currentRound: this.room.currentRound,
-				cards: this.room.cards
+				cards: this.room.cards,
+				results: this.room.results
 			},
 			timestamp: Date.now(),
 			senderId: this.room.hostId!
 		};
 
+		console.log(`📤 Sending initial game state to ${participant.name}...`);
 		const sent = connection.sendMessage(initialMessage);
 		if (sent) {
-			console.log(`📤 Initial game state sent to ${participantId}`);
+			console.log(`✅ Initial game state sent to ${participant.name}`);
 		} else {
-			console.warn(`❌ Failed to send initial game state to ${participantId}`);
+			console.warn(`❌ Failed to send initial game state to ${participant.name}`);
 		}
 	}
 
@@ -239,11 +296,23 @@ export class PlanningPokerHost {
 	// 연결 상태 변화 처리
 	private handleConnectionStateChange(participantId: string, state: RTCPeerConnectionState): void {
 		const participant = this.participants.get(participantId);
-		if (participant) {
+		const connection = this.connections.get(participantId);
+
+		if (participant && connection) {
 			const wasConnected = participant.connected;
-			participant.connected = state === 'connected';
+			const iceConnected = connection.iceConnectionState === 'connected';
+			const dataChannelState = connection.dataChannelState;
+
+			// ICE connection이 connected이고 데이터 채널이 connecting 이상이면 연결된 것으로 간주
+			participant.connected =
+				state === 'connected' ||
+				(iceConnected && (dataChannelState === 'open' || dataChannelState === 'connecting'));
 			this.participants.set(participantId, participant);
 			this.room.participants = this.participants;
+
+			console.log(
+				`🔗 ${participant.name} connection state: ${state}, ICE: ${connection.iceConnectionState}, DataChannel: ${connection.dataChannelState}`
+			);
 
 			if (!wasConnected && participant.connected) {
 				console.log(`✅ ${participant.name} connected successfully`);
@@ -254,9 +323,15 @@ export class PlanningPokerHost {
 			this.updateRoom();
 		}
 
-		if (state === 'disconnected' || state === 'failed') {
-			console.log(`❌ Removing participant ${participantId} due to connection ${state}`);
-			setTimeout(() => this.removeParticipant(participantId), 5000); // 5초 후 제거
+		// 연결 실패 시 더 오래 기다림 (15초)
+		if (state === 'failed') {
+			console.log(
+				`❌ Connection failed for participant ${participantId}, will remove in 15 seconds`
+			);
+			setTimeout(() => this.removeParticipant(participantId), 15000);
+		} else if (state === 'disconnected') {
+			console.log(`⚠️ Participant ${participantId} disconnected, will remove in 10 seconds`);
+			setTimeout(() => this.removeParticipant(participantId), 10000);
 		}
 	}
 
@@ -431,5 +506,127 @@ export class PlanningPokerHost {
 			connection.close();
 		}
 		this.connections.clear();
+	}
+
+	async processGuestAnswer(guestId: string, answerCode: string): Promise<boolean> {
+		try {
+			console.log(`🔄 Processing answer from guest ${guestId}`);
+			console.log(`📋 Answer code length: ${answerCode.length}`);
+
+			const connectionData = JSON.parse(atob(answerCode));
+			console.log(`📋 Parsed connection data:`, connectionData);
+
+			const answer = connectionData.answer;
+			const iceCandidates = connectionData.iceCandidates || [];
+
+			console.log(`📋 Answer SDP length: ${answer.sdp.length}`);
+			console.log(`📋 ICE candidates count: ${iceCandidates.length}`);
+
+			// 기존 연결이 있는지 확인
+			const existingConnection = this.connections.get(guestId);
+			if (existingConnection) {
+				console.log(`⚠️ Connection already exists for guest ${guestId}, removing old connection`);
+				existingConnection.close();
+				this.connections.delete(guestId);
+			}
+
+			// 새 연결 생성
+			const connection = new WebRTCConnection();
+			console.log(`🔗 Creating new connection for guest ${guestId}`);
+
+			// 데이터 채널 생성
+			connection.createDataChannel();
+			console.log(`📡 Data channel created for guest ${guestId}`);
+
+			// 연결 상태 변화 추적
+			connection.onConnectionStateChange((isConnected) => {
+				console.log(
+					`🔗 Host connection state for guest ${guestId}: ${connection.connectionState} (connected: ${isConnected})`
+				);
+				console.log(`🧊 ICE connection state: ${connection.iceConnectionState}`);
+				console.log(`📡 Data channel state: ${connection.dataChannelState}`);
+
+				if (isConnected) {
+					console.log(`✅ Guest ${guestId} successfully connected to host`);
+				}
+			});
+
+			// 메시지 수신 처리
+			connection.onMessage((message) => {
+				console.log(`📨 Host received message from guest ${guestId}:`, message);
+				this.handleMessage(guestId, message);
+			});
+
+			// Answer 설정 (게스트가 이미 생성한 Answer 사용)
+			console.log(`🔧 Setting remote description for guest ${guestId}`);
+			await connection.handleAnswerWithCandidates(answer, iceCandidates);
+
+			// 연결 저장
+			this.connections.set(guestId, connection);
+			console.log(`💾 Connection saved for guest ${guestId}`);
+
+			// 참가자 정보 저장
+			const participantName = connectionData.participantName || 'Unknown';
+			const participant: User = {
+				id: guestId,
+				name: participantName,
+				isHost: false,
+				connected: false
+			};
+			this.participants.set(guestId, participant);
+			this.room.participants = this.participants;
+
+			// 연결 완료 대기
+			console.log(`⏳ Waiting for connection to complete for guest ${guestId}...`);
+			let connected = false;
+			for (let i = 0; i < 60; i++) {
+				const isConnected = connection.isConnected;
+				const iceConnected = connection.iceConnectionState === 'connected';
+				const dataChannelState = connection.dataChannelState;
+
+				console.log(
+					`⏳ Connection check ${i + 1}/60 - Connected: ${isConnected}, ICE: ${iceConnected}, DataChannel: ${dataChannelState}`
+				);
+
+				if (
+					isConnected ||
+					(iceConnected && (dataChannelState === 'open' || dataChannelState === 'connecting'))
+				) {
+					connected = true;
+					console.log(`✅ Connection established for guest ${guestId}`);
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 500));
+			}
+
+			console.log(`🎯 Connection result for guest ${guestId}: ${connected}`);
+
+			if (connected) {
+				console.log(`✅ Guest ${guestId} connection established successfully`);
+				// 참가자 연결 상태 업데이트
+				participant.connected = true;
+				this.participants.set(guestId, participant);
+				this.room.participants = this.participants;
+
+				// 초기 게임 상태 전송
+				this.sendInitialGameState(guestId);
+
+				// 참가자 참가 알림 브로드캐스트
+				this.broadcastUserJoined(participant);
+				this.updateRoom();
+			} else {
+				console.log(`❌ Failed to establish connection with guest ${guestId}`);
+				// 실패한 연결 정리
+				connection.close();
+				this.connections.delete(guestId);
+				this.participants.delete(guestId);
+				this.room.participants = this.participants;
+			}
+
+			return connected;
+		} catch (error) {
+			console.error(`❌ Error processing answer from guest ${guestId}:`, error);
+			return false;
+		}
 	}
 }

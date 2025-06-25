@@ -29,9 +29,41 @@ export class PlanningPokerGuest {
 		// 연결 상태 변화 처리
 		this.connection.onConnectionStateChange((state) => {
 			const isConnected = state === 'connected';
-			console.log(`🔗 Connection state changed: ${state} (connected: ${isConnected})`);
+			console.log(`🔗 Guest connection state changed: ${state} (connected: ${isConnected})`);
+
+			// 연결이 완료되면 자신을 참가자로 추가
+			if (isConnected && this.room) {
+				const user: User = {
+					id: this.userId,
+					name: this.userName,
+					isHost: false,
+					connected: true
+				};
+				this.room.participants.set(this.userId, user);
+				this.updateRoom();
+				console.log(`✅ Guest ${this.userName} connected and added to room`);
+			}
+
 			this.onConnectionStateCallback?.(isConnected);
 		});
+
+		// ICE connection 상태 변화도 추적
+		this.connection.onConnectionStateChange(() => {
+			console.log(`🧊 Guest ICE connection state: ${this.connection.iceConnectionState}`);
+		});
+
+		// 연결 상태 주기적 확인 (10초마다)
+		setInterval(() => {
+			const connectionState = this.connection.connectionState;
+			const iceState = this.connection.iceConnectionState;
+			const dataChannelState = this.connection.dataChannelState;
+
+			console.log(`🔍 Guest connection status check:`);
+			console.log(`  - Connection state: ${connectionState}`);
+			console.log(`  - ICE connection state: ${iceState}`);
+			console.log(`  - Data channel state: ${dataChannelState}`);
+			console.log(`  - Is connected: ${this.connection.isConnected}`);
+		}, 10000);
 	}
 
 	// 방 참가 (개선된 ICE candidates 포함)
@@ -55,6 +87,7 @@ export class PlanningPokerGuest {
 			);
 
 			// Offer와 ICE candidates로 Answer 생성
+			console.log('📤 Creating answer with candidates...');
 			const { answer, iceCandidates } = await this.connection.createAnswerWithCandidates(
 				connectionData.offer,
 				connectionData.iceCandidates
@@ -81,8 +114,55 @@ export class PlanningPokerGuest {
 				currentRound: 1
 			};
 
+			// 자신을 참가자로 추가 (연결 전에 미리 추가)
+			const user: User = {
+				id: this.userId,
+				name: this.userName,
+				isHost: false,
+				connected: false // 연결 완료 시 true로 변경됨
+			};
+			this.room.participants.set(this.userId, user);
+
 			console.log(`✅ Answer code generated (length: ${answerCode.length})`);
 			console.log(`📊 Generated answer with ${iceCandidates.length} ICE candidates`);
+			console.log(`👤 Guest ${this.userName} ready to join room ${connectionData.roomId}`);
+
+			// 연결 상태 확인
+			console.log(`🔍 Guest connection state after answer: ${this.connection.connectionState}`);
+			console.log(`🔍 Guest ICE connection state: ${this.connection.iceConnectionState}`);
+			console.log(`🔍 Guest data channel state: ${this.connection.dataChannelState}`);
+
+			// 연결 완료 대기 (최대 45초)
+			console.log(`⏳ Waiting for connection to complete...`);
+			let connected = false;
+			for (let i = 0; i < 90; i++) {
+				// 90회 * 500ms = 45초
+				const isConnected = this.connection.isConnected;
+				const iceConnected = this.connection.iceConnectionState === 'connected';
+				const dataChannelState = this.connection.dataChannelState;
+
+				console.log(
+					`⏳ Connection check ${i + 1}/90 - Connected: ${isConnected}, ICE: ${iceConnected}, DataChannel: ${dataChannelState}`
+				);
+
+				if (
+					isConnected ||
+					(iceConnected && (dataChannelState === 'open' || dataChannelState === 'connecting'))
+				) {
+					connected = true;
+					console.log(`✅ Connection established for guest ${this.userName}`);
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 500));
+			}
+
+			if (connected) {
+				console.log(
+					`✅ Guest ${this.userName} successfully connected to room ${connectionData.roomId}`
+				);
+			} else {
+				console.log(`⚠️ Guest ${this.userName} connection not established, but continuing...`);
+			}
 
 			return answerCode;
 		} catch (error) {
@@ -93,21 +173,28 @@ export class PlanningPokerGuest {
 
 	// 메시지 처리
 	private handleMessage(message: GameMessage): void {
-		console.log(`📨 Received message: ${message.type}`);
+		console.log(`📨 Guest received message: ${message.type} from ${message.senderId}`);
+		console.log(`📨 Message data:`, message.data);
 
 		switch (message.type) {
 			case 'game_state_changed':
+				console.log('🎮 Processing game state change...');
 				this.handleGameStateChange(message);
 				break;
 			case 'user_joined':
+				console.log('👋 Processing user joined...');
 				this.handleUserJoined(message);
 				break;
 			case 'user_left':
+				console.log('👋 Processing user left...');
 				this.handleUserLeft(message);
 				break;
 			case 'emoji_sent':
+				console.log('😄 Processing emoji message...');
 				this.handleEmojiMessage(message);
 				break;
+			default:
+				console.log(`⚠️ Unknown message type: ${message.type}`);
 		}
 	}
 

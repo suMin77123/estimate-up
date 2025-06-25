@@ -189,6 +189,16 @@
 
 			// Answer 코드를 사용자에게 표시 (호스트에게 전달해야 함)
 			showAnswerCode(answerCode);
+
+			// room 상태 다시 확인
+			room = guest.getRoom();
+			console.log(
+				'📊 Room state after join:',
+				room?.gameState,
+				room?.participants.size,
+				'participants'
+			);
+
 			console.log('✅ Guest initialization completed');
 		} catch (error) {
 			console.error('❌ Failed to initialize guest:', error);
@@ -216,8 +226,20 @@
 	}
 
 	function closeAnswerCodeDisplay() {
+		console.log('📋 Closing answer code display');
+		console.log('📋 Current room state:', room);
+		console.log('📋 Current guest state:', guest);
+
 		showAnswerCodeDisplay = false;
 		answerCodeToDisplay = '';
+
+		// 게스트의 경우 room이 설정되어 있는지 확인
+		if (!isHost && guest && !room) {
+			console.log('📋 Setting room from guest after closing answer display');
+			room = guest.getRoom();
+		}
+
+		console.log('📋 Final room state:', room);
 	}
 
 	// 카드 선택
@@ -265,10 +287,15 @@
 
 		try {
 			processingAnswerCode = true;
+			console.log('🔄 Processing answer code from host UI...');
+
+			// 기존의 handleNewParticipant 메서드 사용
 			await host.handleNewParticipant(answerCode);
+			console.log('✅ Successfully processed answer code');
 		} catch (error) {
 			console.error('Failed to handle answer code:', error);
 			// 에러 처리 (사용자에게 알림 등)
+			errorMessage = '게스트 연결에 실패했습니다: ' + (error as Error).message;
 		} finally {
 			processingAnswerCode = false;
 		}
@@ -313,13 +340,13 @@
 {:else if showAnswerCodeDisplay}
 	<!-- Answer 코드 표시 -->
 	<AnswerCodeDisplay answerCode={answerCodeToDisplay} onClose={closeAnswerCodeDisplay} />
-{:else if room}
+{:else if room || (guest && !isHost)}
 	<main class="game-container">
 		<!-- 상단 정보 바 -->
 		<header class="info-bar">
 			<div class="room-info">
 				<h1>🎯 방 {roomId}</h1>
-				<p class="participants-count">{room.participants.size}명 참가 중</p>
+				<p class="participants-count">{room?.participants?.size || 0}명 참가 중</p>
 			</div>
 
 			{#if isHost}
@@ -339,57 +366,59 @@
 		<!-- 원형 참가자 배치 및 중앙 탁자 -->
 		<div class="game-area">
 			<div class="circle-container">
-				{#each Array.from(room.participants.values()) as participant, index}
-					{@const totalParticipants = room.participants.size}
-					{@const angle = (index * 360) / totalParticipants}
-					{@const radius = 150}
-					{@const x = Math.cos(((angle - 90) * Math.PI) / 180) * radius}
-					{@const y = Math.sin(((angle - 90) * Math.PI) / 180) * radius}
+				{#if room?.participants}
+					{#each Array.from(room.participants.values()) as participant, index}
+						{@const totalParticipants = room.participants.size}
+						{@const angle = (index * 360) / totalParticipants}
+						{@const radius = 150}
+						{@const x = Math.cos(((angle - 90) * Math.PI) / 180) * radius}
+						{@const y = Math.sin(((angle - 90) * Math.PI) / 180) * radius}
 
-					<div
-						class="participant-circle"
-						class:host={participant.isHost}
-						style="transform: translate({x}px, {y}px)"
-					>
-						<div class="participant-avatar">
-							<span class="participant-name">{participant.name}</span>
-							{#if participant.isHost}
-								<div class="host-crown">👑</div>
-							{/if}
-						</div>
-
-						<!-- 카드 상태 표시 -->
-						<div class="card-display">
-							{#if room.gameState === 'voting' && !participant.isHost}
-								{#if participant.selectedCard}
-									<div class="card-back">🎴</div>
-								{:else}
-									<div class="waiting-indicator">⏳</div>
+						<div
+							class="participant-circle"
+							class:host={participant.isHost}
+							style="transform: translate({x}px, {y}px)"
+						>
+							<div class="participant-avatar">
+								<span class="participant-name">{participant.name}</span>
+								{#if participant.isHost}
+									<div class="host-crown">👑</div>
 								{/if}
-							{:else if room.gameState === 'revealed' && participant.selectedCard}
-								<div class="revealed-card">
-									{participant.selectedCard}
-								</div>
-							{/if}
+							</div>
+
+							<!-- 카드 상태 표시 -->
+							<div class="card-display">
+								{#if room?.gameState === 'voting' && !participant.isHost}
+									{#if participant.selectedCard}
+										<div class="card-back">🎴</div>
+									{:else}
+										<div class="waiting-indicator">⏳</div>
+									{/if}
+								{:else if room?.gameState === 'revealed' && participant.selectedCard}
+									<div class="revealed-card">
+										{participant.selectedCard}
+									</div>
+								{/if}
+							</div>
 						</div>
-					</div>
-				{/each}
+					{/each}
+				{/if}
 
 				<!-- 중앙 탁자 -->
 				<div class="center-table">
 					<div class="table-surface">
 						<div class="table-content">
-							{#if room.gameState === 'waiting'}
+							{#if room?.gameState === 'waiting'}
 								<div class="table-status">
 									<span class="status-icon">🕐</span>
 									<span class="status-text">대기 중</span>
 								</div>
-							{:else if room.gameState === 'voting'}
+							{:else if room?.gameState === 'voting'}
 								<div class="table-status">
 									<span class="status-icon">🗳️</span>
 									<span class="status-text">투표 중</span>
 								</div>
-							{:else if room.gameState === 'revealed'}
+							{:else if room?.gameState === 'revealed'}
 								<div class="table-results">
 									{#if room.results}
 										<div class="result-summary">
@@ -412,7 +441,7 @@
 		</div>
 
 		<!-- 상세 결과 (revealed 상태일 때만) -->
-		{#if room.gameState === 'revealed' && room.results}
+		{#if room?.gameState === 'revealed' && room.results}
 			<div class="detailed-results">
 				<h3>📊 투표 결과</h3>
 				<div class="vote-breakdown">
@@ -426,7 +455,7 @@
 		{/if}
 
 		<!-- 카드 선택 영역 (게스트만) -->
-		{#if !isHost && room.gameState === 'voting' && room.cards}
+		{#if !isHost && room?.gameState === 'voting' && room.cards}
 			<div class="card-selection">
 				<h3>카드 선택</h3>
 				<div class="cards-grid">

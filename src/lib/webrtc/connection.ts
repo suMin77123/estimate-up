@@ -10,44 +10,73 @@ export class WebRTCConnection {
 	private connectionMonitor: ConnectionMonitor;
 
 	constructor() {
+		console.log('🔧 Creating new WebRTC connection...');
 		this.peerConnection = new RTCPeerConnection({
 			iceServers: [
+				// Google STUN 서버들 (더 안정적인 것들만 사용)
 				{ urls: 'stun:stun.l.google.com:19302' },
 				{ urls: 'stun:stun1.l.google.com:19302' },
 				{ urls: 'stun:stun2.l.google.com:19302' },
 				{ urls: 'stun:stun3.l.google.com:19302' },
-				{ urls: 'stun:stun4.l.google.com:19302' }
-			]
+				{ urls: 'stun:stun4.l.google.com:19302' },
+				// 추가 STUN 서버
+				{ urls: 'stun:stun.stunprotocol.org:3478' },
+				{ urls: 'stun:stun.voiparound.com:3478' }
+			],
+			iceCandidatePoolSize: 10, // 증가
+			bundlePolicy: 'balanced',
+			rtcpMuxPolicy: 'require',
+			iceTransportPolicy: 'all'
 		});
 
 		this.peerConnection.onconnectionstatechange = () => {
+			console.log(`🔗 Connection state changed: ${this.peerConnection.connectionState}`);
 			this.onConnectionStateCallback?.(this.peerConnection.connectionState);
+		};
+
+		this.peerConnection.oniceconnectionstatechange = () => {
+			console.log(`🧊 ICE connection state: ${this.peerConnection.iceConnectionState}`);
+		};
+
+		this.peerConnection.onicegatheringstatechange = () => {
+			console.log(`🧊 ICE gathering state: ${this.peerConnection.iceGatheringState}`);
+		};
+
+		this.peerConnection.onicecandidateerror = (event) => {
+			console.error('🧊 ICE candidate error:', event);
 		};
 
 		// ICE candidate 관리자 초기화
 		this.iceManager = new ICEManager(this.peerConnection);
 
-		// 연결 모니터 초기화
+		// 연결 모니터 초기화 (타임아웃 시간 증가)
 		this.connectionMonitor = new ConnectionMonitor(
 			this.peerConnection,
 			() => this.handleReconnect(),
-			() => this.handleConnectionFailure()
+			() => this.handleConnectionFailure(),
+			90000 // 90초 타임아웃
 		);
+
+		console.log('✅ WebRTC connection created successfully');
 	}
 
 	// 호스트용: 데이터 채널 생성
 	createDataChannel(channelName: string = 'planning-poker'): void {
+		console.log('📡 Creating data channel:', channelName);
 		this.dataChannel = this.peerConnection.createDataChannel(channelName, {
 			ordered: true,
 			maxRetransmits: 3
 		});
 
 		this.setupDataChannelEvents();
+		console.log('✅ Data channel created');
 	}
 
 	// 게스트용: 데이터 채널 수신
 	setupGuestDataChannel(): void {
+		console.log('📡 Setting up guest data channel listener...');
 		this.peerConnection.ondatachannel = (event) => {
+			console.log('📡 Data channel received:', event.channel.label);
 			this.dataChannel = event.channel;
 			this.setupDataChannelEvents();
 		};
@@ -56,11 +85,15 @@ export class WebRTCConnection {
 	private setupDataChannelEvents(): void {
 		if (!this.dataChannel) return;
 
+		console.log('🔧 Setting up data channel events...');
+		console.log(`📡 Initial data channel state: ${this.dataChannel.readyState}`);
+
 		this.dataChannel.onopen = () => {
 			console.log('✅ Data channel opened');
 		};
 
 		this.dataChannel.onmessage = (event) => {
+			console.log('📨 Data channel message received:', event.data.length, 'bytes');
 			try {
 				const message: GameMessage = JSON.parse(event.data);
 				this.onMessageCallback?.(message);
@@ -76,20 +109,43 @@ export class WebRTCConnection {
 		this.dataChannel.onerror = (error) => {
 			console.error('Data channel error:', error);
 		};
+
+		// 데이터 채널 상태 변화 추적
+		const checkDataChannelState = () => {
+			console.log(`📡 Data channel state: ${this.dataChannel?.readyState}`);
+		};
+
+		// 초기 상태 확인
+		checkDataChannelState();
+
+		// 주기적으로 상태 확인 (5초 동안)
+		const interval = setInterval(() => {
+			checkDataChannelState();
+		}, 1000);
+
+		setTimeout(() => {
+			clearInterval(interval);
+		}, 5000);
+
+		console.log('✅ Data channel events set up');
 	}
 
 	// 메시지 전송 (재시도 로직 추가)
 	sendMessage(message: GameMessage): boolean {
 		if (this.dataChannel && this.dataChannel.readyState === 'open') {
 			try {
-				this.dataChannel.send(JSON.stringify(message));
+				const messageStr = JSON.stringify(message);
+				console.log(`📤 Sending message: ${message.type} (${messageStr.length} bytes)`);
+				this.dataChannel.send(messageStr);
 				return true;
 			} catch (error) {
 				console.error('Failed to send message:', error);
 				return false;
 			}
 		}
-		console.warn('Data channel not ready, message not sent');
+		console.warn(
+			`❌ Data channel not ready (state: ${this.dataChannel?.readyState}), message not sent: ${message.type}`
+		);
 		return false;
 	}
 
@@ -98,16 +154,18 @@ export class WebRTCConnection {
 		offer: RTCSessionDescriptionInit;
 		iceCandidates: RTCIceCandidateInit[];
 	}> {
+		console.log('📡 Creating offer...');
 		const offer = await this.peerConnection.createOffer({
 			offerToReceiveAudio: false,
 			offerToReceiveVideo: false
 		});
 
+		console.log('📡 Setting local description...');
 		await this.peerConnection.setLocalDescription(offer);
-		console.log('📡 Offer created, collecting ICE candidates...');
+		console.log('📡 Local description set, collecting ICE candidates...');
 
-		// ICE candidate 수집 대기
-		const candidates = await this.iceManager.waitForCandidates();
+		// ICE candidate 수집 대기 (시간 증가)
+		const candidates = await this.iceManager.waitForCandidates(15000); // 15초
 		const iceCandidates = this.iceManager.getCandidatesAsInit();
 
 		console.log(`✅ Collected ${candidates.length} ICE candidates`);
@@ -148,8 +206,8 @@ export class WebRTCConnection {
 			await this.peerConnection.setLocalDescription(answer);
 			console.log('📤 Local description set, collecting ICE candidates...');
 
-			// ICE candidate 수집 대기
-			const candidates = await this.iceManager.waitForCandidates();
+			// ICE candidate 수집 대기 (시간 증가)
+			const candidates = await this.iceManager.waitForCandidates(15000); // 15초
 			const answerIceCandidates = this.iceManager.getCandidatesAsInit();
 
 			console.log(`✅ Collected ${candidates.length} ICE candidates for answer`);
@@ -260,7 +318,26 @@ export class WebRTCConnection {
 	}
 
 	get isConnected(): boolean {
-		return this.peerConnection.connectionState === 'connected';
+		const connectionState = this.peerConnection.connectionState;
+		const iceConnectionState = this.peerConnection.iceConnectionState;
+		const dataChannelState = this.dataChannel?.readyState;
+
+		console.log(
+			`🔍 Connection check - Connection: ${connectionState}, ICE: ${iceConnectionState}, DataChannel: ${dataChannelState}`
+		);
+
+		// ICE connection이 connected이고 데이터 채널이 connecting 이상이면 연결된 것으로 간주
+		return (
+			(connectionState === 'connected' || iceConnectionState === 'connected') &&
+			(dataChannelState === 'open' ||
+				dataChannelState === 'connecting' ||
+				dataChannelState === undefined)
+		);
+	}
+
+	// ICE connection state 확인
+	get iceConnectionState(): RTCIceConnectionState {
+		return this.peerConnection.iceConnectionState;
 	}
 
 	// 재연결 처리

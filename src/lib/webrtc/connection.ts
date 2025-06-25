@@ -169,18 +169,43 @@ export class WebRTCConnection {
 		answer: RTCSessionDescriptionInit,
 		iceCandidates: RTCIceCandidateInit[]
 	): Promise<void> {
-		await this.peerConnection.setRemoteDescription(answer);
-		console.log('📥 Remote answer set');
+		console.log(`🔍 Current connection state: ${this.peerConnection.connectionState}`);
+		console.log(`🔍 Current signaling state: ${this.peerConnection.signalingState}`);
 
-		// 게스트의 ICE candidates 추가
-		for (const candidate of iceCandidates) {
-			try {
-				await this.peerConnection.addIceCandidate(candidate);
-			} catch (error) {
-				console.warn('Failed to add ICE candidate:', error);
-			}
+		// 이미 연결된 상태라면 Answer 설정하지 않음
+		if (this.peerConnection.connectionState === 'connected') {
+			console.log('⚠️ Already connected, skipping answer setup');
+			return;
 		}
-		console.log(`📡 Added ${iceCandidates.length} remote ICE candidates from answer`);
+
+		// 시그널링 상태 확인 - have-local-offer 상태에서만 Answer 설정 가능
+		if (this.peerConnection.signalingState !== 'have-local-offer') {
+			console.log(
+				`⚠️ Signaling state is ${this.peerConnection.signalingState}, cannot set remote description`
+			);
+			console.log('⚠️ Expected state: have-local-offer');
+			return;
+		}
+
+		try {
+			console.log('📥 Setting remote answer...');
+			await this.peerConnection.setRemoteDescription(answer);
+			console.log('📥 Remote answer set successfully');
+
+			// 게스트의 ICE candidates 추가
+			console.log(`📡 Adding ${iceCandidates.length} remote ICE candidates from answer...`);
+			for (const candidate of iceCandidates) {
+				try {
+					await this.peerConnection.addIceCandidate(candidate);
+				} catch (error) {
+					console.warn('Failed to add ICE candidate:', error);
+				}
+			}
+			console.log(`📡 Added ${iceCandidates.length} remote ICE candidates from answer`);
+		} catch (error) {
+			console.error('❌ Error setting remote answer:', error);
+			throw error;
+		}
 	}
 
 	// 기존 호환성을 위한 메서드들

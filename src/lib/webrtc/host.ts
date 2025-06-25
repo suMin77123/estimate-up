@@ -82,8 +82,17 @@ export class PlanningPokerHost {
 
 			// 이미 연결된 참가자인지 확인
 			if (this.connections.has(participantId)) {
-				console.log('⚠️ Participant already connected, updating connection');
-				this.connections.get(participantId)?.close();
+				const existingConnection = this.connections.get(participantId)!;
+
+				// 연결이 이미 완료된 상태라면 새로 연결하지 않음
+				if (existingConnection.isConnected) {
+					console.log('⚠️ Participant already connected, skipping new connection');
+					return;
+				}
+
+				// 연결 중이거나 실패한 상태라면 기존 연결 정리
+				console.log('⚠️ Participant connection exists but not connected, cleaning up');
+				existingConnection.close();
 			}
 
 			// 새 WebRTC 연결 생성
@@ -100,10 +109,7 @@ export class PlanningPokerHost {
 				this.handleConnectionStateChange(participantId, state);
 			});
 
-			// Answer 및 ICE candidates 처리
-			await connection.handleAnswerWithCandidates(answerData.answer, answerData.iceCandidates);
-
-			// 참가자 정보 저장
+			// 참가자 정보 저장 (연결 시도 전에 미리 저장)
 			const participant: User = {
 				id: participantId,
 				name: answerData.participantName,
@@ -114,6 +120,16 @@ export class PlanningPokerHost {
 			this.participants.set(participantId, participant);
 			this.connections.set(participantId, connection);
 			this.room.participants = this.participants;
+
+			// 새로운 Offer 생성 (이 참가자 전용)
+			console.log('📡 Creating new offer for participant...');
+			await connection.createOfferWithCandidates();
+
+			// Offer를 원격 설명으로 설정 (createOfferWithCandidates에서 이미 설정됨)
+			console.log('📡 Local offer set for participant');
+
+			// Answer 및 ICE candidates 처리
+			await connection.handleAnswerWithCandidates(answerData.answer, answerData.iceCandidates);
 
 			// 초기 게임 상태 전송 (연결 완료 후)
 			this.scheduleInitialGameState(participantId);

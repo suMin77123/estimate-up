@@ -29,6 +29,9 @@
 	let answerCodeToDisplay = '';
 	let connected = false;
 
+	// 처리 중인 Answer 코드 추적
+	let processingAnswerCode = false;
+
 	// 카드 덱
 	const cards = [
 		'1/4',
@@ -253,7 +256,22 @@
 
 	async function handleAnswerCode(answerCode: string) {
 		if (!host) throw new Error('호스트가 초기화되지 않았습니다');
-		await host.handleNewParticipant(answerCode);
+
+		// 이미 처리 중인 경우 중복 처리 방지
+		if (processingAnswerCode) {
+			console.log('⚠️ Already processing answer code, skipping...');
+			return;
+		}
+
+		try {
+			processingAnswerCode = true;
+			await host.handleNewParticipant(answerCode);
+		} catch (error) {
+			console.error('Failed to handle answer code:', error);
+			// 에러 처리 (사용자에게 알림 등)
+		} finally {
+			processingAnswerCode = false;
+		}
 	}
 
 	// 링크 복사

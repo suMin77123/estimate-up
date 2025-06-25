@@ -117,7 +117,7 @@
 	}
 
 	.connection-indicator {
-		@apply absolute -top-1 -right-1;
+		@apply absolute -right-1 -top-1;
 	}
 
 	.dot {

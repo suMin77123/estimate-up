@@ -3,8 +3,6 @@
 	import { generateRoomId } from '../lib/stores/game.js';
 
 	let hostName = '';
-	let guestName = '';
-	let roomLink = '';
 	let errorMessage = '';
 
 	function createRoom() {
@@ -15,32 +13,6 @@
 
 		const roomId = generateRoomId();
 		goto(`/room/${roomId}?host=true&name=${encodeURIComponent(hostName.trim())}`);
-	}
-
-	function joinRoom() {
-		if (!guestName.trim()) {
-			errorMessage = '이름을 입력해주세요';
-			return;
-		}
-
-		if (!roomLink.trim()) {
-			errorMessage = '방 링크를 입력해주세요';
-			return;
-		}
-
-		try {
-			const url = new URL(roomLink);
-			const pathParts = url.pathname.split('/');
-			const roomId = pathParts[pathParts.length - 1];
-
-			if (!roomId) {
-				throw new Error('Invalid room link');
-			}
-
-			goto(`/room/${roomId}?guest=true&name=${encodeURIComponent(guestName.trim())}`);
-		} catch (error) {
-			errorMessage = '올바른 방 링크를 입력해주세요';
-		}
 	}
 
 	function clearError() {
@@ -59,12 +31,11 @@
 			<p class="subtitle">Planning Poker로 팀과 함께 추정해보세요</p>
 		</header>
 
-		<div class="cards-container">
-			<!-- 방 만들기 카드 -->
-			<div class="card">
+		<div class="create-room-container">
+			<div class="create-room-card">
 				<div class="card-header">
 					<div class="icon">👑</div>
-					<h2>방 만들기</h2>
+					<h2>Planning Poker 방 만들기</h2>
 				</div>
 
 				<div class="card-body">
@@ -82,44 +53,7 @@
 						/>
 					</div>
 
-					<button class="primary-button" on:click={createRoom}> 방 만들기 </button>
-				</div>
-			</div>
-
-			<!-- 방 참가하기 카드 -->
-			<div class="card">
-				<div class="card-header">
-					<div class="icon">🚪</div>
-					<h2>방 참가하기</h2>
-				</div>
-
-				<div class="card-body">
-					<p class="description">방장이 공유한 링크로 Planning Poker에 참가하세요</p>
-
-					<div class="form-group">
-						<label for="guest-name">참가자 이름</label>
-						<input
-							id="guest-name"
-							type="text"
-							placeholder="이름을 입력하세요"
-							bind:value={guestName}
-							on:input={clearError}
-						/>
-					</div>
-
-					<div class="form-group">
-						<label for="room-link">방 링크</label>
-						<input
-							id="room-link"
-							type="text"
-							placeholder="방 링크를 붙여넣으세요"
-							bind:value={roomLink}
-							on:input={clearError}
-							on:keydown={(e) => e.key === 'Enter' && joinRoom()}
-						/>
-					</div>
-
-					<button class="secondary-button" on:click={joinRoom}> 방 참가하기 </button>
+					<button class="create-button" on:click={createRoom}> 🎯 방 만들기 </button>
 				</div>
 			</div>
 		</div>
@@ -175,12 +109,12 @@
 		@apply text-lg text-gray-600 md:text-xl;
 	}
 
-	.cards-container {
-		@apply mb-6 grid gap-6 md:grid-cols-2;
+	.create-room-container {
+		@apply mb-6 flex justify-center;
 	}
 
-	.card {
-		@apply rounded-xl border border-gray-200 bg-white shadow-lg;
+	.create-room-card {
+		@apply w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-lg;
 		@apply transition-shadow hover:shadow-xl;
 	}
 
@@ -219,16 +153,11 @@
 		@apply transition-colors;
 	}
 
-	.primary-button {
-		@apply w-full rounded-lg bg-blue-600 px-6 py-3 text-white;
+	.create-button {
+		@apply w-full rounded-lg bg-blue-600 px-6 py-4 text-white;
 		@apply hover:bg-blue-700 focus:ring-2 focus:ring-blue-500;
-		@apply font-medium transition-colors;
-	}
-
-	.secondary-button {
-		@apply w-full rounded-lg bg-green-600 px-6 py-3 text-white;
-		@apply hover:bg-green-700 focus:ring-2 focus:ring-green-500;
-		@apply font-medium transition-colors;
+		@apply text-lg font-bold transition-colors;
+		@apply shadow-lg hover:shadow-xl;
 	}
 
 	.error-message {

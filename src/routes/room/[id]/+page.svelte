@@ -3,20 +3,15 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
-
-	import Table from '../../../lib/components/Table.svelte';
-	import ParticipantCircle from '../../../lib/components/ParticipantCircle.svelte';
-	import CardDeck from '../../../lib/components/CardDeck.svelte';
-
 	import { PlanningPokerHost } from '../../../lib/webrtc/host.js';
 	import { PlanningPokerGuest } from '../../../lib/webrtc/guest.js';
-
 	import type { Room, User } from '../../../lib/types.js';
+	import AnswerCodeModal from '../../../lib/components/AnswerCodeModal.svelte';
 
 	// URL 파라미터
 	$: roomId = $page.params.id;
 	$: isHost = $page.url.searchParams.get('host') === 'true';
-	$: isGuest = $page.url.searchParams.get('guest') === 'true';
+	$: isJoining = $page.url.searchParams.has('join');
 	$: userName = $page.url.searchParams.get('name') || '';
 
 	// 상태 변수들
@@ -24,13 +19,38 @@
 	let selectedCard: string | null = null;
 	let host: PlanningPokerHost | null = null;
 	let guest: PlanningPokerGuest | null = null;
-	let connected = false;
-	let showShareModal = false;
 	let shareLink = '';
 	let errorMessage = '';
 	let loading = true;
+	let showLinkCopied = false;
+	let showAnswerModal = false;
+	let connected = false;
 
-	// 호스트 컨트롤 버튼 상태
+	// 카드 덱
+	const cards = [
+		'1/4',
+		'1/2',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9',
+		'?',
+		'🍕',
+		'🍔',
+		'🍟',
+		'🌭',
+		'🥙',
+		'🌮',
+		'🍜',
+		'🍣'
+	];
+
+	// 컨트롤 버튼 상태
 	$: canStartVoting = room?.gameState === 'waiting' && room.participants.size > 1;
 	$: canRevealCards = room?.gameState === 'voting' && areAllCardsSelected();
 	$: canNextRound = room?.gameState === 'revealed';
@@ -45,13 +65,19 @@
 	onMount(async () => {
 		if (!browser) return;
 
+		// 게스트가 이름 없이 링크로 직접 접근한 경우 참가 페이지로 리다이렉트
+		if (isJoining && !userName) {
+			const joinCode = $page.url.searchParams.get('join');
+			goto(`/room/${roomId}/join?join=${joinCode}`);
+			return;
+		}
+
 		try {
 			if (isHost) {
 				await initializeHost();
-			} else if (isGuest) {
+			} else if (isJoining && userName) {
 				await initializeGuest();
 			} else {
-				// 잘못된 접근
 				goto('/');
 			}
 		} catch (error) {
@@ -70,10 +96,16 @@
 			loading = false;
 		});
 
-		// 공유 링크 생성
-		shareLink = `${window.location.origin}/room/${roomId}`;
-		connected = true;
-		loading = false;
+		try {
+			// 참가 링크 생성
+			shareLink = await host.generateJoinLink(window.location.origin);
+			connected = true;
+			loading = false;
+		} catch (error) {
+			console.error('Failed to generate join link:', error);
+			errorMessage = '방 생성에 실패했습니다.';
+			loading = false;
+		}
 	}
 
 	// 게스트 초기화
@@ -92,15 +124,34 @@
 			}
 		});
 
-		// URL에서 Offer 데이터 추출 (실제로는 더 복잡한 연결 과정이 필요)
-		// 여기서는 단순화된 버전으로 구현
-		loading = false;
-		errorMessage = 'WebRTC 연결 기능은 추가 구현이 필요합니다.';
+		try {
+			// URL에서 join 코드 추출
+			const joinCode = $page.url.searchParams.get('join');
+			if (!joinCode) {
+				throw new Error('참가 정보가 없습니다.');
+			}
+
+			// 방 참가 시도
+			const answerCode = await guest.joinRoomFromLink(joinCode);
+
+			// Answer 코드를 사용자에게 표시 (호스트에게 전달해야 함)
+			showAnswerCode(answerCode);
+		} catch (error) {
+			console.error('Failed to join room:', error);
+			errorMessage = (error as Error).message;
+			loading = false;
+		}
 	}
 
-	// 카드 선택 (게스트만)
+	// Answer 코드를 사용자에게 표시
+	function showAnswerCode(answerCode: string) {
+		alert(`다음 코드를 방장에게 전달하세요:\n\n${answerCode}`);
+		loading = false;
+	}
+
+	// 카드 선택
 	function handleCardSelect(card: string) {
-		if (!guest || selectedCard === card) return;
+		if (isHost || selectedCard === card || room?.gameState !== 'voting' || !guest) return;
 
 		selectedCard = card;
 		guest.selectCard(card);
@@ -120,27 +171,34 @@
 	function nextRound() {
 		if (!host) return;
 		host.nextRound();
-		selectedCard = null; // 카드 선택 초기화
+		selectedCard = null;
 	}
 
-	// 공유 모달
-	function openShareModal() {
-		showShareModal = true;
+	// Answer 모달 컨트롤
+	function openAnswerModal() {
+		showAnswerModal = true;
 	}
 
-	function closeShareModal() {
-		showShareModal = false;
+	function closeAnswerModal() {
+		showAnswerModal = false;
 	}
 
-	function copyLink() {
-		navigator.clipboard.writeText(shareLink);
-		// 복사 완료 알림
+	async function handleAnswerCode(answerCode: string) {
+		if (!host) throw new Error('호스트가 초기화되지 않았습니다');
+		await host.handleNewParticipant(answerCode);
 	}
 
-	// 참가자 클릭 (이모티콘 전송용)
-	function handleParticipantClick(participant: User) {
-		// 이모티콘 선택 모달 표시
-		console.log('Participant clicked:', participant);
+	// 링크 복사
+	async function copyShareLink() {
+		try {
+			await navigator.clipboard.writeText(shareLink);
+			showLinkCopied = true;
+			setTimeout(() => {
+				showLinkCopied = false;
+			}, 2000);
+		} catch (error) {
+			console.error('Failed to copy link:', error);
+		}
 	}
 
 	// 정리
@@ -171,90 +229,164 @@
 		<!-- 상단 정보 바 -->
 		<header class="info-bar">
 			<div class="room-info">
-				<h1>방 {roomId}</h1>
-				<div class="connection-status" class:connected class:disconnected={!connected}>
-					{connected ? '연결됨' : '연결 끊김'}
-				</div>
+				<h1>🎯 방 {roomId}</h1>
+				<p class="participants-count">{room.participants.size}명 참가 중</p>
 			</div>
 
 			{#if isHost}
-				<button class="share-button" on:click={openShareModal}> 📋 링크 공유 </button>
+				<div class="host-buttons">
+					<button class="share-button" on:click={copyShareLink}>
+						{#if showLinkCopied}
+							✅ 복사됨!
+						{:else}
+							📋 링크 공유
+						{/if}
+					</button>
+					<button class="add-button" on:click={openAnswerModal}> 👥 참가자 추가 </button>
+				</div>
 			{/if}
 		</header>
 
-		<!-- 게임 영역 -->
+		<!-- 원형 참가자 배치 및 중앙 탁자 -->
 		<div class="game-area">
-			<!-- 참가자들과 중앙 탁자 -->
-			<div class="circle-area">
-				<ParticipantCircle {room} onParticipantClick={handleParticipantClick} />
-				<div class="table-wrapper">
-					<Table {room} />
+			<div class="circle-container">
+				{#each Array.from(room.participants.values()) as participant, index}
+					{@const totalParticipants = room.participants.size}
+					{@const angle = (index * 360) / totalParticipants}
+					{@const radius = 150}
+					{@const x = Math.cos(((angle - 90) * Math.PI) / 180) * radius}
+					{@const y = Math.sin(((angle - 90) * Math.PI) / 180) * radius}
+
+					<div
+						class="participant-circle"
+						class:host={participant.isHost}
+						style="transform: translate({x}px, {y}px)"
+					>
+						<div class="participant-avatar">
+							<span class="participant-name">{participant.name}</span>
+							{#if participant.isHost}
+								<div class="host-crown">👑</div>
+							{/if}
+						</div>
+
+						<!-- 카드 상태 표시 -->
+						<div class="card-display">
+							{#if room.gameState === 'voting' && !participant.isHost}
+								{#if participant.selectedCard}
+									<div class="card-back">🎴</div>
+								{:else}
+									<div class="waiting-indicator">⏳</div>
+								{/if}
+							{:else if room.gameState === 'revealed' && participant.selectedCard}
+								<div class="revealed-card">
+									{participant.selectedCard}
+								</div>
+							{/if}
+						</div>
+					</div>
+				{/each}
+
+				<!-- 중앙 탁자 -->
+				<div class="center-table">
+					<div class="table-surface">
+						<div class="table-content">
+							{#if room.gameState === 'waiting'}
+								<div class="table-status">
+									<span class="status-icon">🕐</span>
+									<span class="status-text">대기 중</span>
+								</div>
+							{:else if room.gameState === 'voting'}
+								<div class="table-status">
+									<span class="status-icon">🗳️</span>
+									<span class="status-text">투표 중</span>
+								</div>
+							{:else if room.gameState === 'revealed'}
+								<div class="table-results">
+									{#if room.results}
+										<div class="result-summary">
+											<div class="avg-result">
+												<span class="result-label">평균</span>
+												<span class="result-value">{room.results.average.toFixed(1)}</span>
+											</div>
+											<div class="total-result">
+												<span class="result-label">합계</span>
+												<span class="result-value">{room.results.total}</span>
+											</div>
+										</div>
+									{/if}
+								</div>
+							{/if}
+						</div>
+					</div>
 				</div>
 			</div>
 		</div>
 
-		<!-- 하단 컨트롤 영역 -->
-		<footer class="controls">
-			{#if isHost}
-				<!-- 호스트 컨트롤 -->
-				<div class="host-controls">
-					<button class="control-button primary" disabled={!canStartVoting} on:click={startVoting}>
-						투표 시작
-					</button>
-					<button
-						class="control-button secondary"
-						disabled={!canRevealCards}
-						on:click={revealCards}
-					>
-						카드 공개
-					</button>
-					<button class="control-button accent" disabled={!canNextRound} on:click={nextRound}>
-						다음 라운드
-					</button>
+		<!-- 상세 결과 (revealed 상태일 때만) -->
+		{#if room.gameState === 'revealed' && room.results}
+			<div class="detailed-results">
+				<h3>📊 투표 결과</h3>
+				<div class="vote-breakdown">
+					<div class="vote-cards-display">
+						{#each room.results.votes as vote}
+							<span class="vote-card-detail">{vote}</span>
+						{/each}
+					</div>
 				</div>
-			{:else}
-				<!-- 게스트 카드 선택 -->
-				<div class="guest-controls">
-					{#if room.gameState === 'voting'}
-						<div class="card-selection">
-							<p class="instruction">카드를 선택하세요</p>
-							<CardDeck cards={room.cards} {selectedCard} onCardSelect={handleCardSelect} />
-						</div>
-					{:else if room.gameState === 'waiting'}
-						<div class="waiting-message">방장이 투표를 시작할 때까지 기다려주세요</div>
-					{:else}
-						<div class="revealed-message">결과가 공개되었습니다</div>
-					{/if}
+			</div>
+		{/if}
+
+		<!-- 카드 선택 영역 (게스트만) -->
+		{#if !isHost && room.gameState === 'voting' && room.cards}
+			<div class="card-selection">
+				<h3>카드 선택</h3>
+				<div class="cards-grid">
+					{#each room.cards as card}
+						<button
+							class="card"
+							class:selected={selectedCard === card}
+							on:click={() => handleCardSelect(card)}
+						>
+							{card}
+						</button>
+					{/each}
 				</div>
-			{/if}
-		</footer>
+			</div>
+		{/if}
+
+		<!-- 호스트 컨트롤 -->
+		{#if isHost}
+			<footer class="host-controls">
+				<button class="control-button start" disabled={!canStartVoting} on:click={startVoting}>
+					🗳️ 투표 시작
+				</button>
+				<button class="control-button reveal" disabled={!canRevealCards} on:click={revealCards}>
+					�� 카드 공개
+				</button>
+				<button class="control-button next" disabled={!canNextRound} on:click={nextRound}>
+					🔄 다음 라운드
+				</button>
+			</footer>
+		{/if}
 	</main>
 
-	<!-- 공유 모달 -->
-	{#if showShareModal}
-		<div class="modal-overlay" on:click={closeShareModal}>
-			<div class="modal" on:click|stopPropagation>
-				<h3>방 링크 공유</h3>
-				<p>이 링크를 팀원들에게 공유하세요:</p>
-				<div class="link-container">
-					<input type="text" value={shareLink} readonly />
-					<button on:click={copyLink}>복사</button>
-				</div>
-				<button class="close-button" on:click={closeShareModal}>닫기</button>
-			</div>
-		</div>
-	{/if}
+	<!-- Answer 코드 입력 모달 -->
+	<AnswerCodeModal
+		showModal={showAnswerModal}
+		onSubmit={handleAnswerCode}
+		onClose={closeAnswerModal}
+	/>
 {/if}
 
 <style>
 	.loading-container,
 	.error-container {
 		@apply flex min-h-screen flex-col items-center justify-center;
-		@apply bg-gradient-to-br from-blue-50 to-green-50;
+		@apply bg-gradient-to-br from-blue-50 to-green-50 p-4;
 	}
 
 	.spinner {
-		@apply h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-600;
+		@apply mb-4 h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-600;
 	}
 
 	.error-message {
@@ -262,7 +394,7 @@
 	}
 
 	.retry-button {
-		@apply rounded-lg bg-blue-600 px-6 py-2 text-white hover:bg-blue-700;
+		@apply rounded-lg bg-blue-600 px-6 py-3 text-white hover:bg-blue-700;
 	}
 
 	.game-container {
@@ -275,103 +407,205 @@
 	}
 
 	.room-info h1 {
-		@apply text-lg font-bold text-gray-800;
+		@apply text-xl font-bold text-gray-800;
 	}
 
-	.connection-status {
-		@apply rounded px-2 py-1 text-sm;
+	.participants-count {
+		@apply text-sm text-gray-600;
 	}
 
-	.connection-status.connected {
-		@apply bg-green-100 text-green-700;
-	}
-
-	.connection-status.disconnected {
-		@apply bg-red-100 text-red-700;
+	.host-buttons {
+		@apply flex gap-2;
 	}
 
 	.share-button {
-		@apply rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700;
+		@apply rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition-colors hover:bg-blue-700;
+	}
+
+	.add-button {
+		@apply rounded-lg bg-green-600 px-4 py-2 text-sm text-white transition-colors hover:bg-green-700;
 	}
 
 	.game-area {
 		@apply flex flex-1 items-center justify-center p-4;
 		@apply relative;
+		min-height: 500px;
 	}
 
-	.circle-area {
-		@apply relative w-full max-w-lg;
-		@apply aspect-square;
+	.circle-container {
+		@apply relative;
+		@apply flex items-center justify-center;
+		width: 400px;
+		height: 400px;
 	}
 
-	.table-wrapper {
-		@apply absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 transform;
+	.participant-circle {
+		@apply absolute;
+		@apply flex flex-col items-center gap-2;
+		@apply transition-all duration-300;
 	}
 
-	.controls {
-		@apply border-t border-gray-200 bg-white p-4;
+	.participant-circle.host {
+		@apply scale-110 transform;
 	}
 
-	.host-controls {
-		@apply flex justify-center gap-3;
+	.participant-avatar {
+		@apply relative flex flex-col items-center gap-1;
+		@apply rounded-full bg-white shadow-lg;
+		@apply flex h-16 w-16 items-center justify-center;
+		@apply border-2 border-gray-200;
 	}
 
-	.control-button {
-		@apply rounded-lg px-6 py-3 font-medium;
-		@apply disabled:cursor-not-allowed disabled:opacity-50;
+	.participant-circle.host .participant-avatar {
+		@apply border-blue-400 bg-blue-50;
 	}
 
-	.control-button.primary {
-		@apply bg-blue-600 text-white hover:bg-blue-700;
+	.participant-name {
+		@apply text-center text-xs font-medium text-gray-700;
+		@apply max-w-16 truncate;
 	}
 
-	.control-button.secondary {
-		@apply bg-green-600 text-white hover:bg-green-700;
-	}
-
-	.control-button.accent {
-		@apply bg-purple-600 text-white hover:bg-purple-700;
-	}
-
-	.guest-controls {
-		@apply text-center;
-	}
-
-	.card-selection .instruction {
-		@apply mb-3 text-sm text-gray-600;
-	}
-
-	.waiting-message,
-	.revealed-message {
-		@apply rounded-lg border border-blue-200 bg-blue-50 p-4;
+	.participant-circle.host .participant-name {
 		@apply text-blue-700;
 	}
 
-	.modal-overlay {
-		@apply bg-opacity-50 fixed inset-0 z-50 flex items-center justify-center bg-black;
+	.host-crown {
+		@apply absolute -right-2 -top-2;
+		@apply text-sm;
 	}
 
-	.modal {
-		@apply mx-4 w-full max-w-md rounded-lg bg-white p-6 shadow-xl;
+	.card-display {
+		@apply mt-1;
 	}
 
-	.modal h3 {
-		@apply mb-4 text-lg font-bold;
+	.card-back {
+		@apply rounded bg-blue-500 px-2 py-1 text-sm font-bold text-white;
 	}
 
-	.link-container {
-		@apply my-4 flex gap-2;
+	.waiting-indicator {
+		@apply text-sm text-gray-400;
 	}
 
-	.link-container input {
-		@apply flex-1 rounded border border-gray-300 px-3 py-2;
+	.revealed-card {
+		@apply rounded bg-green-500 px-2 py-1 text-sm font-bold text-white;
+		@apply min-w-8 text-center;
 	}
 
-	.link-container button {
-		@apply rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700;
+	.center-table {
+		@apply absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transform;
+		@apply h-32 w-32;
 	}
 
-	.close-button {
-		@apply w-full rounded bg-gray-600 px-4 py-2 text-white hover:bg-gray-700;
+	.table-surface {
+		@apply h-full w-full rounded-full;
+		@apply bg-gradient-to-br from-green-100 to-green-200;
+		@apply border-4 border-green-300;
+		@apply shadow-lg;
+		@apply flex items-center justify-center;
+	}
+
+	.table-content {
+		@apply text-center;
+	}
+
+	.table-status {
+		@apply flex flex-col items-center gap-1;
+	}
+
+	.status-icon {
+		@apply text-2xl;
+	}
+
+	.status-text {
+		@apply text-xs font-medium text-gray-700;
+	}
+
+	.table-results {
+		@apply flex flex-col items-center;
+	}
+
+	.result-summary {
+		@apply space-y-1;
+	}
+
+	.avg-result,
+	.total-result {
+		@apply flex flex-col items-center;
+	}
+
+	.result-label {
+		@apply text-xs text-gray-600;
+	}
+
+	.result-value {
+		@apply text-sm font-bold text-green-700;
+	}
+
+	.detailed-results {
+		@apply border-t border-gray-200 bg-white p-6;
+	}
+
+	.detailed-results h3 {
+		@apply mb-4 text-center text-lg font-bold text-gray-800;
+	}
+
+	.vote-breakdown {
+		@apply text-center;
+	}
+
+	.vote-cards-display {
+		@apply flex flex-wrap justify-center gap-2;
+	}
+
+	.vote-card-detail {
+		@apply rounded-lg bg-gray-100 px-3 py-2 font-bold text-gray-700;
+		@apply border border-gray-300;
+	}
+
+	.card-selection {
+		@apply border-t border-gray-200 bg-white p-6 shadow-lg;
+	}
+
+	.card-selection h3 {
+		@apply mb-4 text-center text-lg font-bold text-gray-800;
+	}
+
+	.cards-grid {
+		@apply grid grid-cols-4 gap-3 md:grid-cols-6 lg:grid-cols-8;
+		@apply mx-auto max-w-2xl;
+	}
+
+	.card {
+		@apply rounded-lg border-2 border-gray-200 bg-white p-4 shadow-sm;
+		@apply transition-all hover:border-blue-300 hover:shadow-md;
+		@apply text-lg font-bold text-gray-700;
+		@apply flex aspect-square items-center justify-center;
+	}
+
+	.card.selected {
+		@apply border-blue-500 bg-blue-50 text-blue-700;
+	}
+
+	.host-controls {
+		@apply border-t border-gray-200 bg-white p-6;
+		@apply flex justify-center gap-4;
+		@apply shadow-lg;
+	}
+
+	.control-button {
+		@apply rounded-lg px-6 py-3 font-bold transition-all;
+		@apply disabled:cursor-not-allowed disabled:opacity-50;
+	}
+
+	.control-button.start {
+		@apply bg-blue-600 text-white hover:bg-blue-700;
+	}
+
+	.control-button.reveal {
+		@apply bg-green-600 text-white hover:bg-green-700;
+	}
+
+	.control-button.next {
+		@apply bg-purple-600 text-white hover:bg-purple-700;
 	}
 </style>

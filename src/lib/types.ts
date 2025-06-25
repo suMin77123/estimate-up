@@ -2,17 +2,25 @@ export interface User {
 	id: string;
 	name: string;
 	isHost: boolean;
-	connected: boolean;
+	connected?: boolean;
 	selectedCard?: string;
+}
+
+export interface GameResults {
+	average: number;
+	total: number;
+	votes: string[];
 }
 
 export interface Room {
 	id: string;
-	hostId: string;
+	hostId?: string;
 	participants: Map<string, User>;
 	gameState: 'waiting' | 'voting' | 'revealed';
-	cards: string[];
-	currentRound: number;
+	cards?: string[];
+	currentRound?: number;
+	revealed?: boolean;
+	results?: GameResults | null;
 }
 
 export interface GameMessage {

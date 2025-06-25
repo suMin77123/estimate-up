@@ -1,6 +1,7 @@
 import { WebRTCConnection } from './connection.js';
 import type { GameMessage, User, Room } from '../types.js';
 import { generateUserId } from '../stores/game.js';
+import { SignalingManager, type ConnectionData, type AnswerData } from './signaling.js';
 
 export class PlanningPokerGuest {
 	private connection: WebRTCConnection;
@@ -29,17 +30,45 @@ export class PlanningPokerGuest {
 		});
 	}
 
-	// 방 참가 (Offer를 받아서 Answer 생성)
-	async joinRoom(offerBase64: string): Promise<string> {
+	// 방 참가 (링크에서 Offer 추출하여 Answer 생성)
+	async joinRoomFromLink(joinCode: string): Promise<string> {
 		try {
-			const offer = JSON.parse(atob(offerBase64));
-			const answer = await this.connection.createAnswer(offer);
+			// 링크에서 연결 데이터 추출
+			const connectionData: ConnectionData = SignalingManager.decodeOffer(joinCode);
 
-			// Answer를 base64로 인코딩하여 반환
-			return btoa(JSON.stringify(answer));
+			// 연결 데이터 검증
+			if (Date.now() - connectionData.timestamp > 300000) {
+				// 5분 만료
+				throw new Error('링크가 만료되었습니다');
+			}
+
+			// Offer로 Answer 생성
+			const answer = await this.connection.createAnswer(connectionData.offer);
+
+			// Answer 데이터 구성
+			const answerData: AnswerData = {
+				answer,
+				participantName: this.userName,
+				participantId: this.userId
+			};
+
+			// 호스트에게 전달할 Answer 코드 생성
+			const answerCode = SignalingManager.encodeAnswer(answerData);
+
+			// 방 정보 초기 설정
+			this.room = {
+				id: connectionData.roomId,
+				hostId: 'host', // 실제 호스트 ID는 연결 후 받음
+				participants: new Map(),
+				gameState: 'waiting',
+				cards: [],
+				currentRound: 1
+			};
+
+			return answerCode;
 		} catch (error) {
 			console.error('Failed to join room:', error);
-			throw new Error('잘못된 방 링크입니다');
+			throw new Error('방 참가에 실패했습니다: ' + (error as Error).message);
 		}
 	}
 

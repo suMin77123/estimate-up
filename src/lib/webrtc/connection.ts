@@ -1,22 +1,36 @@
 import type { GameMessage } from '../types.js';
+import { ICEManager, ConnectionMonitor } from './signaling.js';
 
 export class WebRTCConnection {
 	private peerConnection: RTCPeerConnection;
 	private dataChannel: RTCDataChannel | null = null;
 	private onMessageCallback: ((message: GameMessage) => void) | null = null;
 	private onConnectionStateCallback: ((state: RTCPeerConnectionState) => void) | null = null;
+	private iceManager: ICEManager;
+	private connectionMonitor: ConnectionMonitor;
 
 	constructor() {
 		this.peerConnection = new RTCPeerConnection({
 			iceServers: [
 				{ urls: 'stun:stun.l.google.com:19302' },
-				{ urls: 'stun:stun1.l.google.com:19302' }
+				{ urls: 'stun:stun1.l.google.com:19302' },
+				{ urls: 'stun:stun2.l.google.com:19302' }
 			]
 		});
 
 		this.peerConnection.onconnectionstatechange = () => {
 			this.onConnectionStateCallback?.(this.peerConnection.connectionState);
 		};
+
+		// ICE candidate 관리자 초기화
+		this.iceManager = new ICEManager(this.peerConnection);
+
+		// 연결 모니터 초기화
+		this.connectionMonitor = new ConnectionMonitor(
+			this.peerConnection,
+			() => this.handleReconnect(),
+			() => this.handleConnectionFailure()
+		);
 	}
 
 	// 호스트용: 데이터 채널 생성
@@ -68,6 +82,10 @@ export class WebRTCConnection {
 	async createOffer(): Promise<RTCSessionDescriptionInit> {
 		const offer = await this.peerConnection.createOffer();
 		await this.peerConnection.setLocalDescription(offer);
+
+		// ICE candidate 수집 대기
+		await this.iceManager.waitForCandidates();
+
 		return offer;
 	}
 
@@ -118,5 +136,37 @@ export class WebRTCConnection {
 
 	get isConnected(): boolean {
 		return this.peerConnection.connectionState === 'connected';
+	}
+
+	// 재연결 처리
+	private async handleReconnect(): Promise<void> {
+		console.log('Attempting to reconnect...');
+		// 재연결 로직은 상위 레벨에서 처리
+	}
+
+	// 연결 실패 처리
+	private handleConnectionFailure(): void {
+		console.log('Connection failed permanently');
+		this.onConnectionStateCallback?.('failed');
+	}
+
+	// ICE candidate 리스너 설정
+	onICECandidate(callback: (candidate: RTCIceCandidate) => void): void {
+		this.iceManager.onCandidate(callback);
+	}
+
+	// 데이터 채널 상태 확인
+	get dataChannelState(): RTCDataChannelState | null {
+		return this.dataChannel?.readyState || null;
+	}
+
+	// 연결 통계 정보
+	async getConnectionStats(): Promise<RTCStatsReport | null> {
+		try {
+			return await this.peerConnection.getStats();
+		} catch (error) {
+			console.error('Failed to get connection stats:', error);
+			return null;
+		}
 	}
 }

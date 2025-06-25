@@ -1,6 +1,7 @@
 import { WebRTCConnection } from './connection.js';
 import type { GameMessage, User, Room } from '../types.js';
 import { generateUserId, generateCardDeck } from '../stores/game.js';
+import { SignalingManager, type ConnectionData, type AnswerData } from './signaling.js';
 
 export class PlanningPokerHost {
 	private connections: Map<string, WebRTCConnection> = new Map();
@@ -33,42 +34,101 @@ export class PlanningPokerHost {
 		this.updateRoom();
 	}
 
-	// 새 참가자 연결 처리
-	async handleNewParticipant(participantName: string): Promise<string> {
-		const participantId = generateUserId();
-		const connection = new WebRTCConnection();
+	// 참가 링크 생성 (호스트가 공유할 링크)
+	async generateJoinLink(baseUrl: string): Promise<string> {
+		// 일시적인 연결을 위한 Offer 생성
+		const tempConnection = new WebRTCConnection();
+		tempConnection.createDataChannel();
 
-		// 데이터 채널 생성
-		connection.createDataChannel();
+		const offer = await tempConnection.createOffer();
 
-		// 메시지 핸들러 설정
-		connection.onMessage((message) => {
-			this.handleMessage(participantId, message);
-		});
-
-		// 연결 상태 변화 처리
-		connection.onConnectionStateChange((state) => {
-			this.handleConnectionStateChange(participantId, state);
-		});
-
-		// Offer 생성
-		const offer = await connection.createOffer();
-
-		// 참가자 정보 저장
-		const participant: User = {
-			id: participantId,
-			name: participantName,
-			isHost: false,
-			connected: false
+		const connectionData: ConnectionData = {
+			offer,
+			roomId: this.room.id,
+			hostName: this.participants.get(this.room.hostId)?.name || 'Host',
+			timestamp: Date.now()
 		};
 
-		this.participants.set(participantId, participant);
-		this.connections.set(participantId, connection);
-		this.room.participants = this.participants;
-		this.updateRoom();
+		const encodedOffer = SignalingManager.encodeOffer(connectionData);
+		const joinLink = SignalingManager.createJoinLink(baseUrl, this.room.id, encodedOffer);
 
-		// Offer를 base64로 인코딩하여 반환
-		return btoa(JSON.stringify(offer));
+		// 임시 연결 정리
+		tempConnection.close();
+
+		return joinLink;
+	}
+
+	// 새 참가자 연결 처리 (Answer 수신 시)
+	async handleNewParticipant(answerCode: string): Promise<void> {
+		try {
+			const answerData: AnswerData = SignalingManager.decodeAnswer(answerCode);
+			const participantId = answerData.participantId;
+
+			// 새 WebRTC 연결 생성
+			const connection = new WebRTCConnection();
+			connection.createDataChannel();
+
+			// 메시지 핸들러 설정
+			connection.onMessage((message) => {
+				this.handleMessage(participantId, message);
+			});
+
+			// 연결 상태 변화 처리
+			connection.onConnectionStateChange((state) => {
+				this.handleConnectionStateChange(participantId, state);
+			});
+
+			// Answer 처리 (게스트에서 온 Answer)
+			await connection.handleAnswer(answerData.answer);
+
+			// 참가자 정보 저장
+			const participant: User = {
+				id: participantId,
+				name: answerData.participantName,
+				isHost: false,
+				connected: false
+			};
+
+			this.participants.set(participantId, participant);
+			this.connections.set(participantId, connection);
+			this.room.participants = this.participants;
+
+			// 참가자에게 초기 게임 상태 전송
+			this.sendInitialGameState(participantId);
+			this.updateRoom();
+		} catch (error) {
+			console.error('Failed to add participant:', error);
+			throw new Error('참가자 추가에 실패했습니다');
+		}
+	}
+
+	// 초기 게임 상태 전송
+	private sendInitialGameState(participantId: string): void {
+		const connection = this.connections.get(participantId);
+		if (!connection) return;
+
+		const initialMessage: GameMessage = {
+			type: 'game_state_changed',
+			data: {
+				gameState: this.room.gameState,
+				participants: Array.from(this.participants.values()),
+				currentRound: this.room.currentRound,
+				cards: this.room.cards
+			},
+			timestamp: Date.now(),
+			senderId: this.room.hostId
+		};
+
+		// 연결이 완료되면 메시지 전송
+		const sendWhenReady = () => {
+			if (connection.isConnected) {
+				connection.sendMessage(initialMessage);
+			} else {
+				setTimeout(sendWhenReady, 100);
+			}
+		};
+
+		sendWhenReady();
 	}
 
 	// Answer 처리

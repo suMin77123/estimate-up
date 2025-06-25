@@ -7,6 +7,7 @@
 	import { PlanningPokerGuest } from '../../../lib/webrtc/guest.js';
 	import type { Room, User } from '../../../lib/types.js';
 	import AnswerCodeModal from '../../../lib/components/AnswerCodeModal.svelte';
+	import AnswerCodeDisplay from '../../../lib/components/AnswerCodeDisplay.svelte';
 
 	// URL 파라미터
 	$: roomId = $page.params.id;
@@ -24,6 +25,8 @@
 	let loading = true;
 	let showLinkCopied = false;
 	let showAnswerModal = false;
+	let showAnswerCodeDisplay = false;
+	let answerCodeToDisplay = '';
 	let connected = false;
 
 	// 카드 덱
@@ -139,6 +142,15 @@
 			console.log('👤 Creating guest instance...');
 			guest = new PlanningPokerGuest(userName);
 
+			// 초기 room 정보를 즉시 설정
+			room = guest.getRoom();
+			console.log(
+				'📊 Initial room set for guest:',
+				room?.gameState,
+				room?.participants.size,
+				'participants'
+			);
+
 			guest.onRoomUpdate((updatedRoom) => {
 				console.log(
 					'📊 Room updated:',
@@ -147,7 +159,6 @@
 					'participants'
 				);
 				room = updatedRoom;
-				loading = false;
 			});
 
 			guest.onConnectionStateChange((isConnected) => {
@@ -164,9 +175,14 @@
 				throw new Error('참가 정보가 없습니다.');
 			}
 
-			console.log('🔄 Joining room...');
+			console.log('🔄 Joining room with join code length:', joinCode.length);
+			console.log('🔄 Join code preview:', joinCode.substring(0, 50) + '...');
+
 			// 방 참가 시도
 			const answerCode = await guest.joinRoomFromLink(joinCode);
+
+			console.log('📋 Answer code generated, length:', answerCode.length);
+			console.log('📋 Answer code preview:', answerCode.substring(0, 50) + '...');
 
 			// Answer 코드를 사용자에게 표시 (호스트에게 전달해야 함)
 			showAnswerCode(answerCode);
@@ -182,8 +198,23 @@
 	// Answer 코드를 사용자에게 표시
 	function showAnswerCode(answerCode: string) {
 		console.log('📋 Showing answer code to user');
-		alert(`다음 코드를 방장에게 전달하세요:\n\n${answerCode}`);
+		console.log('📋 Answer code length:', answerCode.length);
+		console.log('📋 Setting showAnswerCodeDisplay to true');
+
+		answerCodeToDisplay = answerCode;
+		showAnswerCodeDisplay = true;
 		loading = false;
+
+		console.log('📋 State after setting:', {
+			showAnswerCodeDisplay,
+			answerCodeToDisplay: answerCodeToDisplay.length,
+			loading
+		});
+	}
+
+	function closeAnswerCodeDisplay() {
+		showAnswerCodeDisplay = false;
+		answerCodeToDisplay = '';
 	}
 
 	// 카드 선택
@@ -261,6 +292,9 @@
 		</div>
 		<button class="retry-button" on:click={() => goto('/')}> 홈으로 돌아가기 </button>
 	</div>
+{:else if showAnswerCodeDisplay}
+	<!-- Answer 코드 표시 -->
+	<AnswerCodeDisplay answerCode={answerCodeToDisplay} onClose={closeAnswerCodeDisplay} />
 {:else if room}
 	<main class="game-container">
 		<!-- 상단 정보 바 -->

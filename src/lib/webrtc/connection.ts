@@ -126,33 +126,42 @@ export class WebRTCConnection {
 		answer: RTCSessionDescriptionInit;
 		iceCandidates: RTCIceCandidateInit[];
 	}> {
-		await this.peerConnection.setRemoteDescription(offer);
-		console.log('📥 Remote description set');
+		try {
+			console.log('📥 Setting remote description...');
+			await this.peerConnection.setRemoteDescription(offer);
+			console.log('📥 Remote description set successfully');
 
-		// 호스트의 ICE candidates 추가
-		for (const candidate of iceCandidates) {
-			try {
-				await this.peerConnection.addIceCandidate(candidate);
-			} catch (error) {
-				console.warn('Failed to add ICE candidate:', error);
+			// 호스트의 ICE candidates 추가
+			console.log(`📡 Adding ${iceCandidates.length} remote ICE candidates...`);
+			for (const candidate of iceCandidates) {
+				try {
+					await this.peerConnection.addIceCandidate(candidate);
+				} catch (error) {
+					console.warn('Failed to add ICE candidate:', error);
+				}
 			}
+			console.log(`📡 Added ${iceCandidates.length} remote ICE candidates`);
+
+			console.log('📤 Creating answer...');
+			const answer = await this.peerConnection.createAnswer();
+			console.log('📤 Answer created, setting local description...');
+			await this.peerConnection.setLocalDescription(answer);
+			console.log('📤 Local description set, collecting ICE candidates...');
+
+			// ICE candidate 수집 대기
+			const candidates = await this.iceManager.waitForCandidates();
+			const answerIceCandidates = this.iceManager.getCandidatesAsInit();
+
+			console.log(`✅ Collected ${candidates.length} ICE candidates for answer`);
+
+			return {
+				answer,
+				iceCandidates: answerIceCandidates
+			};
+		} catch (error) {
+			console.error('❌ Error in createAnswerWithCandidates:', error);
+			throw error;
 		}
-		console.log(`📡 Added ${iceCandidates.length} remote ICE candidates`);
-
-		const answer = await this.peerConnection.createAnswer();
-		await this.peerConnection.setLocalDescription(answer);
-		console.log('📤 Answer created, collecting ICE candidates...');
-
-		// ICE candidate 수집 대기
-		const candidates = await this.iceManager.waitForCandidates();
-		const answerIceCandidates = this.iceManager.getCandidatesAsInit();
-
-		console.log(`✅ Collected ${candidates.length} ICE candidates for answer`);
-
-		return {
-			answer,
-			iceCandidates: answerIceCandidates
-		};
 	}
 
 	// Answer 처리 (호스트용) - ICE candidates 포함

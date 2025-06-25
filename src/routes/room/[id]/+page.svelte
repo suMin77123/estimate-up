@@ -63,88 +63,125 @@
 
 	// 방 초기화
 	onMount(async () => {
-		if (!browser) return;
+		if (!browser) {
+			console.log('SSR environment, skipping initialization');
+			return;
+		}
+
+		console.log('🚀 Initializing room page...');
+		console.log(
+			`Room ID: ${roomId}, Is Host: ${isHost}, Is Joining: ${isJoining}, User: ${userName}`
+		);
 
 		// 게스트가 이름 없이 링크로 직접 접근한 경우 참가 페이지로 리다이렉트
 		if (isJoining && !userName) {
 			const joinCode = $page.url.searchParams.get('join');
+			console.log('Redirecting to join page...');
 			goto(`/room/${roomId}/join?join=${joinCode}`);
 			return;
 		}
 
 		try {
 			if (isHost) {
+				console.log('🏠 Initializing as host...');
 				await initializeHost();
 			} else if (isJoining && userName) {
+				console.log('👤 Initializing as guest...');
 				await initializeGuest();
 			} else {
+				console.log('❌ Invalid access, redirecting to home...');
 				goto('/');
 			}
 		} catch (error) {
-			console.error('Initialization failed:', error);
-			errorMessage = '방 접속에 실패했습니다.';
+			console.error('❌ Initialization failed:', error);
+			errorMessage = '방 접속에 실패했습니다: ' + (error as Error).message;
 			loading = false;
 		}
 	});
 
 	// 호스트 초기화
 	async function initializeHost() {
-		host = new PlanningPokerHost(roomId, userName);
-
-		host.onRoomUpdate((updatedRoom) => {
-			room = updatedRoom;
-			loading = false;
-		});
-
 		try {
+			console.log('🏠 Creating host instance...');
+			host = new PlanningPokerHost(roomId, userName);
+
+			// 초기 room 정보를 즉시 설정
+			room = host.getRoom();
+			console.log('📊 Initial room set:', room.gameState, room.participants.size, 'participants');
+
+			host.onRoomUpdate((updatedRoom) => {
+				console.log(
+					'📊 Room updated:',
+					updatedRoom.gameState,
+					updatedRoom.participants.size,
+					'participants'
+				);
+				room = updatedRoom;
+			});
+
+			console.log('📋 Generating join link...');
 			// 참가 링크 생성
 			shareLink = await host.generateJoinLink(window.location.origin);
 			connected = true;
 			loading = false;
+			console.log('✅ Host initialization completed');
 		} catch (error) {
-			console.error('Failed to generate join link:', error);
-			errorMessage = '방 생성에 실패했습니다.';
+			console.error('❌ Failed to initialize host:', error);
+			errorMessage = '방 생성에 실패했습니다: ' + (error as Error).message;
 			loading = false;
+			throw error;
 		}
 	}
 
 	// 게스트 초기화
 	async function initializeGuest() {
-		guest = new PlanningPokerGuest(userName);
-
-		guest.onRoomUpdate((updatedRoom) => {
-			room = updatedRoom;
-			loading = false;
-		});
-
-		guest.onConnectionStateChange((isConnected) => {
-			connected = isConnected;
-			if (!isConnected) {
-				errorMessage = '연결이 끊어졌습니다.';
-			}
-		});
-
 		try {
+			console.log('👤 Creating guest instance...');
+			guest = new PlanningPokerGuest(userName);
+
+			guest.onRoomUpdate((updatedRoom) => {
+				console.log(
+					'📊 Room updated:',
+					updatedRoom.gameState,
+					updatedRoom.participants.size,
+					'participants'
+				);
+				room = updatedRoom;
+				loading = false;
+			});
+
+			guest.onConnectionStateChange((isConnected) => {
+				console.log('🔗 Connection state changed:', isConnected);
+				connected = isConnected;
+				if (!isConnected) {
+					errorMessage = '연결이 끊어졌습니다.';
+				}
+			});
+
 			// URL에서 join 코드 추출
 			const joinCode = $page.url.searchParams.get('join');
 			if (!joinCode) {
 				throw new Error('참가 정보가 없습니다.');
 			}
 
+			console.log('🔄 Joining room...');
 			// 방 참가 시도
 			const answerCode = await guest.joinRoomFromLink(joinCode);
 
 			// Answer 코드를 사용자에게 표시 (호스트에게 전달해야 함)
 			showAnswerCode(answerCode);
+			console.log('✅ Guest initialization completed');
 		} catch (error) {
-			console.error('Failed to join room:', error);
+			console.error('❌ Failed to initialize guest:', error);
 			errorMessage = (error as Error).message;
 			loading = false;
+			throw error;
 		}
 	}
 
 	// Answer 코드를 사용자에게 표시
 	function showAnswerCode(answerCode: string) {
+		console.log('📋 Showing answer code to user');
 		alert(`다음 코드를 방장에게 전달하세요:\n\n${answerCode}`);
 		loading = false;
 	}
@@ -361,7 +398,7 @@
 					🗳️ 투표 시작
 				</button>
 				<button class="control-button reveal" disabled={!canRevealCards} on:click={revealCards}>
-					�� 카드 공개
+					🎲 카드 공개
 				</button>
 				<button class="control-button next" disabled={!canNextRound} on:click={nextRound}>
 					🔄 다음 라운드

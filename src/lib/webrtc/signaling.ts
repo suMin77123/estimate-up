@@ -2,6 +2,7 @@
 
 export interface ConnectionData {
 	offer: RTCSessionDescriptionInit;
+	iceCandidates: RTCIceCandidateInit[];
 	roomId: string;
 	hostName: string;
 	timestamp: number;
@@ -9,35 +10,57 @@ export interface ConnectionData {
 
 export interface AnswerData {
 	answer: RTCSessionDescriptionInit;
+	iceCandidates: RTCIceCandidateInit[];
 	participantName: string;
 	participantId: string;
 }
 
 export class SignalingManager {
-	// Offer를 URL로 인코딩
+	// Offer를 URL로 인코딩 (압축 개선)
 	static encodeOffer(connectionData: ConnectionData): string {
-		const compressed = JSON.stringify(connectionData);
-		return btoa(compressed).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+		try {
+			const compressed = JSON.stringify(connectionData);
+			const encoded = btoa(compressed).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+			return encoded;
+		} catch (error) {
+			console.error('Failed to encode offer:', error);
+			throw new Error('연결 정보 인코딩에 실패했습니다');
+		}
 	}
 
 	// URL에서 Offer 디코딩
 	static decodeOffer(encodedOffer: string): ConnectionData {
-		const padded = encodedOffer.replace(/-/g, '+').replace(/_/g, '/');
-		const padding = '='.repeat((4 - (padded.length % 4)) % 4);
-		const decoded = atob(padded + padding);
-		return JSON.parse(decoded);
+		try {
+			const padded = encodedOffer.replace(/-/g, '+').replace(/_/g, '/');
+			const padding = '='.repeat((4 - (padded.length % 4)) % 4);
+			const decoded = atob(padded + padding);
+			return JSON.parse(decoded);
+		} catch (error) {
+			console.error('Failed to decode offer:', error);
+			throw new Error('연결 정보 디코딩에 실패했습니다');
+		}
 	}
 
 	// Answer를 클립보드용으로 인코딩
 	static encodeAnswer(answerData: AnswerData): string {
-		const compressed = JSON.stringify(answerData);
-		return btoa(compressed);
+		try {
+			const compressed = JSON.stringify(answerData);
+			return btoa(compressed);
+		} catch (error) {
+			console.error('Failed to encode answer:', error);
+			throw new Error('응답 정보 인코딩에 실패했습니다');
+		}
 	}
 
 	// Answer 디코딩
 	static decodeAnswer(encodedAnswer: string): AnswerData {
-		const decoded = atob(encodedAnswer);
-		return JSON.parse(decoded);
+		try {
+			const decoded = atob(encodedAnswer);
+			return JSON.parse(decoded);
+		} catch (error) {
+			console.error('Failed to decode answer:', error);
+			throw new Error('응답 정보 디코딩에 실패했습니다');
+		}
 	}
 
 	// 참가 링크 생성
@@ -57,18 +80,33 @@ export class SignalingManager {
 		}
 		return null;
 	}
+
+	// 코드 길이 검증
+	static validateAnswerCode(code: string): boolean {
+		try {
+			const decoded = atob(code);
+			const data = JSON.parse(decoded);
+			return data.answer && data.participantName && data.participantId;
+		} catch {
+			return false;
+		}
+	}
 }
 
-// ICE candidate 수집 도우미
+// ICE candidate 수집 도우미 (개선)
 export class ICEManager {
 	private candidates: RTCIceCandidate[] = [];
 	private onCandidateCallback: ((candidate: RTCIceCandidate) => void) | null = null;
+	private gatheringComplete = false;
 
 	constructor(private peerConnection: RTCPeerConnection) {
 		this.peerConnection.onicecandidate = (event) => {
 			if (event.candidate) {
 				this.candidates.push(event.candidate);
 				this.onCandidateCallback?.(event.candidate);
+			} else {
+				// candidate가 null이면 수집 완료
+				this.gatheringComplete = true;
 			}
 		};
 	}
@@ -79,27 +117,55 @@ export class ICEManager {
 		this.candidates.forEach(callback);
 	}
 
-	async waitForCandidates(timeout: number = 3000): Promise<RTCIceCandidate[]> {
+	async waitForCandidates(timeout: number = 5000): Promise<RTCIceCandidate[]> {
 		return new Promise((resolve) => {
+			// 이미 수집 완료되었으면 바로 반환
+			if (this.gatheringComplete) {
+				resolve(this.candidates);
+				return;
+			}
+
 			const timer = setTimeout(() => {
+				console.warn('ICE candidate gathering timeout, using collected candidates');
 				resolve(this.candidates);
 			}, timeout);
 
-			this.peerConnection.onicegatheringstatechange = () => {
-				if (this.peerConnection.iceGatheringState === 'complete') {
+			const checkComplete = () => {
+				if (this.peerConnection.iceGatheringState === 'complete' || this.gatheringComplete) {
 					clearTimeout(timer);
 					resolve(this.candidates);
 				}
 			};
+
+			this.peerConnection.onicegatheringstatechange = checkComplete;
+
+			// 즉시 한 번 체크
+			checkComplete();
 		});
+	}
+
+	// ICE candidates를 JSON으로 변환
+	getCandidatesAsInit(): RTCIceCandidateInit[] {
+		return this.candidates.map((candidate) => ({
+			candidate: candidate.candidate,
+			sdpMLineIndex: candidate.sdpMLineIndex,
+			sdpMid: candidate.sdpMid,
+			usernameFragment: candidate.usernameFragment
+		}));
+	}
+
+	// 수집된 candidate 개수 반환
+	getCandidateCount(): number {
+		return this.candidates.length;
 	}
 }
 
-// 연결 상태 모니터링
+// 연결 상태 모니터링 (개선)
 export class ConnectionMonitor {
 	private reconnectAttempts = 0;
 	private maxReconnectAttempts = 3;
 	private reconnectDelay = 1000;
+	private connectionTimeout: number | null = null;
 
 	constructor(
 		private peerConnection: RTCPeerConnection,
@@ -109,29 +175,56 @@ export class ConnectionMonitor {
 		this.peerConnection.onconnectionstatechange = () => {
 			this.handleConnectionStateChange();
 		};
+
+		// 연결 시간 초과 모니터링
+		this.startConnectionTimeout();
+	}
+
+	private startConnectionTimeout(): void {
+		this.connectionTimeout = setTimeout(() => {
+			if (this.peerConnection.connectionState === 'connecting') {
+				console.warn('Connection timeout, treating as failed');
+				this.handleConnectionFailure();
+			}
+		}, 30000); // 30초 타임아웃
+	}
+
+	private clearConnectionTimeout(): void {
+		if (this.connectionTimeout) {
+			clearTimeout(this.connectionTimeout);
+			this.connectionTimeout = null;
+		}
 	}
 
 	private handleConnectionStateChange(): void {
 		const state = this.peerConnection.connectionState;
+		console.log(`WebRTC connection state: ${state}`);
 
 		switch (state) {
 			case 'connected':
 				this.reconnectAttempts = 0;
-				console.log('WebRTC connection established');
+				this.clearConnectionTimeout();
+				console.log('✅ WebRTC connection established successfully');
+				break;
+
+			case 'connecting':
+				console.log('🔄 WebRTC connection in progress...');
 				break;
 
 			case 'disconnected':
-				console.log('WebRTC connection disconnected, attempting reconnect...');
+				console.log('⚠️ WebRTC connection disconnected, attempting reconnect...');
 				this.attemptReconnect();
 				break;
 
 			case 'failed':
-				console.log('WebRTC connection failed');
-				this.attemptReconnect();
+				console.log('❌ WebRTC connection failed');
+				this.clearConnectionTimeout();
+				this.handleConnectionFailure();
 				break;
 
 			case 'closed':
-				console.log('WebRTC connection closed');
+				console.log('🔒 WebRTC connection closed');
+				this.clearConnectionTimeout();
 				break;
 		}
 	}
@@ -139,11 +232,12 @@ export class ConnectionMonitor {
 	private async attemptReconnect(): Promise<void> {
 		if (this.reconnectAttempts >= this.maxReconnectAttempts) {
 			console.log('Max reconnect attempts reached');
-			this.onFailure();
+			this.handleConnectionFailure();
 			return;
 		}
 
 		this.reconnectAttempts++;
+		console.log(`Reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
 
 		setTimeout(async () => {
 			try {
@@ -153,5 +247,16 @@ export class ConnectionMonitor {
 				this.attemptReconnect();
 			}
 		}, this.reconnectDelay * this.reconnectAttempts);
+	}
+
+	private handleConnectionFailure(): void {
+		this.clearConnectionTimeout();
+		this.onFailure();
+	}
+
+	// 수동으로 재연결 시도 (사용자 액션)
+	async manualReconnect(): Promise<void> {
+		this.reconnectAttempts = 0;
+		await this.attemptReconnect();
 	}
 }
